@@ -30,16 +30,17 @@ import (
 // Conv contains all schema and data conversion state.
 type Conv struct {
 	mode           mode                                // Schema mode or data mode.
-	spSchema       map[string]ddl.CreateTable          // Maps Spanner table name to Spanner schema.
-	syntheticPKeys map[string]syntheticPKey            // Maps Spanner table name to synthetic primary key (if needed).
-	srcSchema      map[string]schema.Table             // Maps source-DB table name to schema information.
-	issues         map[string]map[string][]schemaIssue // Maps source-DB table/col to list of schema conversion issues.
-	toSpanner      map[string]nameAndCols              // Maps from source-DB table name to Spanner name and column mapping.
-	toSource       map[string]nameAndCols              // Maps from Spanner table name to source-DB table name and column mapping.
+	SpSchema       map[string]ddl.CreateTable          // Maps Spanner table name to Spanner schema.
+	SyntheticPKeys map[string]SyntheticPKey            // Maps Spanner table name to synthetic primary key (if needed).
+	SrcSchema      map[string]schema.Table             // Maps source-DB table name to schema information.
+	Issues         map[string]map[string][]SchemaIssue // Maps source-DB table/col to list of schema conversion issues.
+	ToSpanner      map[string]NameAndCols              // Maps from source-DB table name to Spanner name and column mapping.
+	ToSource       map[string]NameAndCols              // Maps from Spanner table name to source-DB table name and column mapping.
 	dataSink       func(table string, cols []string, values []interface{})
-	location       *time.Location // Timezone (for timestamp conversion).
+	Location       *time.Location // Timezone (for timestamp conversion).
 	sampleBadRows  rowSamples     // Rows that generated errors during conversion.
 	stats          stats
+	Offset         string
 }
 
 type mode int
@@ -49,37 +50,37 @@ const (
 	dataOnly
 )
 
-// syntheticPKey specifies a synthetic primary key and current sequence
+// SyntheticPKey specifies a synthetic primary key and current sequence
 // count for a table, if needed. We use a synthetic primary key when
 // the source DB table has no primary key.
-type syntheticPKey struct {
-	col      string
-	sequence int64
+type SyntheticPKey struct {
+	Col      string
+	Sequence int64
 }
 
-type schemaIssue int
+type SchemaIssue int
 
 // Defines all of the schema issues we track. Includes issues
 // with type mappings, as well as features (such as source
 // DB constraints) that aren't supported in Spanner.
 const (
-	defaultValue schemaIssue = iota
-	foreignKey
-	missingPrimaryKey
-	multiDimensionalArray
-	noGoodType
-	numeric
-	numericThatFits
-	serial
-	timestamp
-	widened
+	DefaultValue SchemaIssue = iota
+	ForeignKey
+	MissingPrimaryKey
+	MultiDimensionalArray
+	NoGoodType
+	Numeric
+	NumericThatFits
+	Serial
+	Timestamp
+	Widened
 )
 
-// nameAndCols contains the name of a table and its columns.
+// NameAndCols contains the name of a table and its columns.
 // Used to map between source DB and Spanner table and column names.
-type nameAndCols struct {
-	name string
-	cols map[string]string
+type NameAndCols struct {
+	Name string
+	Cols map[string]string
 }
 
 type rowSamples struct {
@@ -106,26 +107,26 @@ type stats struct {
 	badRows    map[string]int64          // Count of rows where conversion failed (d), broken down by source table.
 	statement  map[string]*statementStat // Count of processed statements, broken down by statement type.
 	unexpected map[string]int64          // Count of unexpected conditions, broken down by condition description.
-	reparsed   int64                     // Count of times we re-parse pg_dump data looking for end-of-statement.
+	reparsed   int64                     // Count of times we re-parse dump data looking for end-of-statement.
 }
 
 type statementStat struct {
 	schema int64
 	data   int64
 	skip   int64
-	error  int64
+	Error  int64
 }
 
 // MakeConv returns a default-configured Conv.
 func MakeConv() *Conv {
 	return &Conv{
-		spSchema:       make(map[string]ddl.CreateTable),
-		syntheticPKeys: make(map[string]syntheticPKey),
-		srcSchema:      make(map[string]schema.Table),
-		issues:         make(map[string]map[string][]schemaIssue),
-		toSpanner:      make(map[string]nameAndCols),
-		toSource:       make(map[string]nameAndCols),
-		location:       time.Local, // By default, use go's local time, which uses $TZ (when set).
+		SpSchema:       make(map[string]ddl.CreateTable),
+		SyntheticPKeys: make(map[string]SyntheticPKey),
+		SrcSchema:      make(map[string]schema.Table),
+		Issues:         make(map[string]map[string][]SchemaIssue),
+		ToSpanner:      make(map[string]NameAndCols),
+		ToSource:       make(map[string]NameAndCols),
+		Location:       time.Local, // By default, use go's local time, which uses $TZ (when set).
 		sampleBadRows:  rowSamples{bytesLimit: 10 * 1000 * 1000},
 		stats: stats{
 			rows:       make(map[string]int64),
@@ -134,6 +135,7 @@ func MakeConv() *Conv {
 			statement:  make(map[string]*statementStat),
 			unexpected: make(map[string]int64),
 		},
+		Offset: "",
 	}
 }
 
@@ -168,13 +170,13 @@ func (conv *Conv) SetDataMode() {
 // Return DDL in alphabetical table order.
 func (conv *Conv) GetDDL(c ddl.Config) []string {
 	var tables []string
-	for t := range conv.spSchema {
+	for t := range conv.SpSchema {
 		tables = append(tables, t)
 	}
 	sort.Strings(tables)
 	var ddl []string
 	for _, t := range tables {
-		ddl = append(ddl, conv.spSchema[t].PrintCreateTable(c))
+		ddl = append(ddl, conv.SpSchema[t].PrintCreateTable(c))
 	}
 	return ddl
 }
@@ -184,11 +186,11 @@ func (conv *Conv) WriteRow(srcTable, spTable string, spCols []string, spVals []i
 	if conv.dataSink == nil {
 		msg := "Internal error: ProcessDataRow called but dataSink not configured"
 		VerbosePrintf("%s\n", msg)
-		conv.unexpected(msg)
-		conv.statsAddBadRow(srcTable, conv.dataMode())
+		conv.Unexpected(msg)
+		conv.StatsAddBadRow(srcTable, conv.DataMode())
 	} else {
 		conv.dataSink(spTable, spCols, spVals)
-		conv.statsAddGoodRow(srcTable, conv.dataMode())
+		conv.statsAddGoodRow(srcTable, conv.DataMode())
 	}
 }
 
@@ -199,6 +201,11 @@ func (conv *Conv) Rows() int64 {
 		n += c
 	}
 	return n
+}
+
+// GetRows return count of data rows for a srcTable
+func (conv *Conv) GetRows(srcTable string) int64 {
+	return conv.stats.rows[srcTable]
 }
 
 // BadRows returns the total count of bad rows encountered during
@@ -215,7 +222,7 @@ func (conv *Conv) BadRows() int64 {
 func (conv *Conv) Statements() int64 {
 	n := int64(0)
 	for _, x := range conv.stats.statement {
-		n += x.schema + x.data + x.skip + x.error
+		n += x.schema + x.data + x.skip + x.Error
 	}
 	return n
 }
@@ -224,15 +231,34 @@ func (conv *Conv) Statements() int64 {
 func (conv *Conv) StatementErrors() int64 {
 	n := int64(0)
 	for _, x := range conv.stats.statement {
-		n += x.error
+		n += x.Error
 	}
 	return n
+}
+
+// GetStatement returns statements
+func (conv *Conv) GetStatement() map[string]*statementStat {
+	return conv.stats.statement
 }
 
 // Unexpecteds returns the total number of distinct unexpected conditions
 // encountered during processing.
 func (conv *Conv) Unexpecteds() int64 {
 	return int64(len(conv.stats.unexpected))
+}
+
+// GetUnexpected returns all count of unexpected conditions,
+// broken down by condition description
+func (conv *Conv) GetUnexpected() map[string]int64 {
+	return conv.stats.unexpected
+}
+
+func (conv *Conv) StatsAddUnexpecteds(u string, count int64) {
+	// Limit size of unexpected map. If over limit, then only
+	// update existing entries.
+	if _, ok := conv.stats.unexpected[u]; ok || len(conv.stats.unexpected) < 1000 {
+		conv.stats.unexpected[u] += count
+	}
 }
 
 // CollectBadRows updates the list of bad rows, while respecting
@@ -263,34 +289,39 @@ func (conv *Conv) SampleBadRows(n int) []string {
 // AddPrimaryKeys analyzes all tables in conv.schema and adds synthetic primary
 // keys for any tables that don't have primary key.
 func (conv *Conv) AddPrimaryKeys() {
-	for t, ct := range conv.spSchema {
+	for t, ct := range conv.SpSchema {
 		if len(ct.Pks) == 0 {
 			k := conv.buildPrimaryKey(t)
 			ct.ColNames = append(ct.ColNames, k)
 			ct.ColDefs[k] = ddl.ColumnDef{Name: k, T: ddl.Int64{}}
 			ct.Pks = []ddl.IndexKey{ddl.IndexKey{Col: k}}
-			conv.spSchema[t] = ct
-			conv.syntheticPKeys[t] = syntheticPKey{k, 0}
+			conv.SpSchema[t] = ct
+			conv.SyntheticPKeys[t] = SyntheticPKey{k, 0}
 		}
 	}
 }
 
 // SetLocation configures the timezone for data conversion.
 func (conv *Conv) SetLocation(loc *time.Location) {
-	conv.location = loc
+	conv.Location = loc
+}
+
+// SetOffset configures the offset for data conversion.
+func (conv *Conv) SetOffset(Offset string) {
+	conv.Offset = Offset
 }
 
 func (conv *Conv) buildPrimaryKey(spTable string) string {
 	base := "synth_id"
-	if _, ok := conv.toSource[spTable]; !ok {
-		conv.unexpected(fmt.Sprintf("toSource lookup fails for table %s: ", spTable))
+	if _, ok := conv.ToSource[spTable]; !ok {
+		conv.Unexpected(fmt.Sprintf("ToSource lookup fails for table %s: ", spTable))
 		return base
 	}
 	count := 0
 	key := base
 	for {
 		// Check key isn't already a column in the table.
-		if _, ok := conv.toSource[spTable].cols[key]; !ok {
+		if _, ok := conv.ToSource[spTable].Cols[key]; !ok {
 			return key
 		}
 		key = fmt.Sprintf("%s%d", base, count)
@@ -302,7 +333,7 @@ func (conv *Conv) buildPrimaryKey(spTable string) string {
 // that were not expected. Note that the counts maybe not
 // be completely reliable due to potential double-counting
 // because we process pg_dump data twice.
-func (conv *Conv) unexpected(u string) {
+func (conv *Conv) Unexpected(u string) {
 	VerbosePrintf("Unexpected condition: %s\n", u)
 	// Limit size of unexpected map. If over limit, then only
 	// update existing entries.
@@ -311,7 +342,7 @@ func (conv *Conv) unexpected(u string) {
 	}
 }
 
-// statsAddRow increments the count of rows for 'srcTable' if b is
+// StatsAddRow increments the count of rows for 'srcTable' if b is
 // true.  The boolean arg 'b' is used to avoid double counting of
 // stats. Specifically, some code paths that report row stats run in
 // both schema-mode and data-mode e.g. statement.go.  To avoid double
@@ -319,41 +350,56 @@ func (conv *Conv) unexpected(u string) {
 // place where row stats are collected. When specifying this mode take
 // care to ensure that the code actually runs in the mode you specify,
 // otherwise stats will be dropped.
-func (conv *Conv) statsAddRow(srcTable string, b bool) {
+func (conv *Conv) StatsAddRow(srcTable string, b bool) {
 	if b {
 		conv.stats.rows[srcTable]++
 	}
 }
 
-func (conv *Conv) statsAddRows(srcTable string, count int64) {
+// StatsAddRows increments the count of rows for 'srcTable' by the count specified
+func (conv *Conv) StatsAddRows(srcTable string, count int64) {
 	conv.stats.rows[srcTable] += count
 }
 
 // statsAddGoodRow increments the good-row stats for 'srcTable' if b
-// is true.  See statsAddRow comments for context.
+// is true.  See StatsAddRow comments for context.
 func (conv *Conv) statsAddGoodRow(srcTable string, b bool) {
 	if b {
 		conv.stats.goodRows[srcTable]++
 	}
 }
 
-func (conv *Conv) statsAddGoodRows(srcTable string, count int64) {
+// statsAddGoodRow increments the good-row stats for 'srcTable' by count specified
+func (conv *Conv) StatsAddGoodRows(srcTable string, count int64) {
 	conv.stats.goodRows[srcTable] += count
 }
 
-// statsAddBadRow increments the bad-row stats for 'srcTable' if b is
-// true.  See statsAddRow comments for context.
-func (conv *Conv) statsAddBadRow(srcTable string, b bool) {
+func (conv *Conv) StatsAddReparsed() {
+	conv.stats.reparsed++
+}
+
+func (conv *Conv) GetReparsed() int64 {
+	return conv.stats.reparsed
+}
+
+// StatsAddBadRow increments the bad-row stats for 'srcTable' if b is
+// true.  See StatsAddRow comments for context.
+func (conv *Conv) StatsAddBadRow(srcTable string, b bool) {
 	if b {
 		conv.stats.badRows[srcTable]++
 	}
 }
 
-func (conv *Conv) statsAddBadRows(srcTable string, count int64) {
+// StatsAddBadRows increments the bad-row stats for 'srcTable' by count specified
+func (conv *Conv) StatsAddBadRows(srcTable string, count int64) {
 	conv.stats.badRows[srcTable] += count
 }
 
-func prNodeType(n nodes.Node) string {
+func (conv *Conv) GetBadRows() map[string]int64 {
+	return conv.stats.badRows
+}
+
+func PrNodeType(n nodes.Node) string {
 	// Strip off "pg_query." prefix from nodes.Nodes type.
 	return strings.TrimPrefix(reflect.TypeOf(n).Name(), "pg_query.")
 }
@@ -361,7 +407,7 @@ func prNodeType(n nodes.Node) string {
 func prNodes(l []nodes.Node) string {
 	var s []string
 	for _, n := range l {
-		s = append(s, prNodeType(n))
+		s = append(s, PrNodeType(n))
 	}
 	return strings.Join(s, ".")
 }
@@ -373,38 +419,66 @@ func (conv *Conv) getStatementStat(s string) *statementStat {
 	return conv.stats.statement[s]
 }
 
-func (conv *Conv) skipStatement(l []nodes.Node) {
-	if conv.schemaMode() { // Record statement stats on first pass only.
+func (conv *Conv) SkipStatement(l []nodes.Node) {
+	if conv.SchemaMode() { // Record statement stats on first pass only.
 		s := prNodes(l)
 		VerbosePrintf("Skipping statement: %s\n", s)
 		conv.getStatementStat(s).skip++
 	}
 }
-
-func (conv *Conv) errorInStatement(l []nodes.Node) {
-	if conv.schemaMode() { // Record statement stats on first pass only.
-		s := prNodes(l)
-		VerbosePrintf("Error processing statement: %s\n", s)
-		conv.getStatementStat(s).error++
+func (conv *Conv) SkipStatementMySQL(stmtType string) {
+	if conv.SchemaMode() {
+		VerbosePrintf("Skipping statement: %s\n", stmtType)
+		conv.getStatementStat(stmtType).skip++
 	}
 }
 
-func (conv *Conv) schemaStatement(l []nodes.Node) {
-	if conv.schemaMode() { // Record statement stats on first pass only.
+func (conv *Conv) ErrorInStatement(l []nodes.Node) {
+	if conv.SchemaMode() { // Record statement stats on first pass only.
+		s := prNodes(l)
+		VerbosePrintf("Error processing statement: %s\n", s)
+		conv.getStatementStat(s).Error++
+	}
+}
+func (conv *Conv) ErrorInStatementMYSQL(stmtType string) {
+	if conv.SchemaMode() { // Record statement stats on first pass only.
+		VerbosePrintf("Error processing statement: %s\n", stmtType)
+		conv.getStatementStat(stmtType).Error++
+	}
+}
+
+func (conv *Conv) SchemaStatement(l []nodes.Node) {
+	if conv.SchemaMode() { // Record statement stats on first pass only.
 		conv.getStatementStat(prNodes(l)).schema++
 	}
 }
+func (conv *Conv) SchemaStatementMySQL(stmtType string) {
+	if conv.SchemaMode() { // Record statement stats on first pass only.
+		conv.getStatementStat(stmtType).schema++
+	}
+}
 
-func (conv *Conv) dataStatement(l []nodes.Node) {
-	if conv.schemaMode() { // Record statement stats on first pass only.
+func (conv *Conv) DataStatement(l []nodes.Node) {
+	if conv.SchemaMode() { // Record statement stats on first pass only.
 		conv.getStatementStat(prNodes(l)).data++
 	}
 }
 
-func (conv *Conv) schemaMode() bool {
+func (conv *Conv) SchemaMode() bool {
 	return conv.mode == schemaOnly
 }
 
-func (conv *Conv) dataMode() bool {
+func (conv *Conv) DataMode() bool {
 	return conv.mode == dataOnly
+}
+
+func byteSize(r *row) int64 {
+	n := int64(len(r.table))
+	for _, c := range r.cols {
+		n += int64(len(c))
+	}
+	for _, v := range r.vals {
+		n += int64(len(v))
+	}
+	return n
 }

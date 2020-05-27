@@ -32,20 +32,20 @@ import (
 func TestSetSchemaMode(t *testing.T) {
 	conv := MakeConv()
 	conv.SetSchemaMode()
-	assert.True(t, conv.schemaMode())
-	assert.False(t, conv.dataMode())
+	assert.True(t, conv.SchemaMode())
+	assert.False(t, conv.DataMode())
 }
 
 func TestSetDataMode(t *testing.T) {
 	conv := MakeConv()
 	conv.SetDataMode()
-	assert.False(t, conv.schemaMode())
-	assert.True(t, conv.dataMode())
+	assert.False(t, conv.SchemaMode())
+	assert.True(t, conv.DataMode())
 }
 
 func TestGetDDL(t *testing.T) {
 	conv := MakeConv()
-	conv.spSchema["table1"] = ddl.CreateTable{
+	conv.SpSchema["table1"] = ddl.CreateTable{
 		Name:     "table1",
 		ColNames: []string{"a", "b"},
 		ColDefs: map[string]ddl.ColumnDef{
@@ -53,7 +53,7 @@ func TestGetDDL(t *testing.T) {
 			"b": ddl.ColumnDef{Name: "b", T: ddl.Float64{}},
 		},
 		Pks: []ddl.IndexKey{ddl.IndexKey{Col: "a"}}}
-	conv.spSchema["table2"] = ddl.CreateTable{
+	conv.SpSchema["table2"] = ddl.CreateTable{
 		Name:     "table2",
 		ColNames: []string{"a"},
 		ColDefs: map[string]ddl.ColumnDef{
@@ -90,22 +90,22 @@ func TestBadRows(t *testing.T) {
 
 func TestStatements(t *testing.T) {
 	conv := MakeConv()
-	conv.errorInStatement(parse(t, "CREATE TABLE cart (pid text NOT NULL);"))
-	conv.schemaStatement(parse(t, "CREATE TABLE cart (pid text NOT NULL);"))
-	conv.dataStatement(parse(t, "INSERT INTO cart (pid) VALUES ('p42');"))
-	conv.skipStatement(parse(t, "GRANT ALL ON SCHEMA public TO PUBLIC;"))
+	conv.ErrorInStatement(parse(t, "CREATE TABLE cart (pid text NOT NULL);"))
+	conv.SchemaStatement(parse(t, "CREATE TABLE cart (pid text NOT NULL);"))
+	conv.DataStatement(parse(t, "INSERT INTO cart (pid) VALUES ('p42');"))
+	conv.SkipStatement(parse(t, "GRANT ALL ON SCHEMA public TO PUBLIC;"))
 	assert.Equal(t, int64(4), conv.Statements())
 }
 
 func TestStatementErrors(t *testing.T) {
 	conv := MakeConv()
-	conv.errorInStatement(parse(t, "CREATE TABLE cart (pid text NOT NULL);"))
+	conv.ErrorInStatement(parse(t, "CREATE TABLE cart (pid text NOT NULL);"))
 	assert.Equal(t, int64(1), conv.StatementErrors())
 }
 
 func TestUnexpecteds(t *testing.T) {
 	conv := MakeConv()
-	conv.unexpected("expected-the-unexpected")
+	conv.Unexpected("expected-the-unexpected")
 	assert.Equal(t, int64(1), conv.Unexpecteds())
 }
 
@@ -119,7 +119,7 @@ func TestGetBadRows(t *testing.T) {
 
 func TestAddPrimaryKeys(t *testing.T) {
 	conv := MakeConv()
-	conv.spSchema["table"] = ddl.CreateTable{
+	conv.SpSchema["table"] = ddl.CreateTable{
 		Name:     "table",
 		ColNames: []string{"a", "b"},
 		ColDefs: map[string]ddl.ColumnDef{
@@ -137,8 +137,8 @@ func TestAddPrimaryKeys(t *testing.T) {
 			"synth_id": ddl.ColumnDef{Name: "synth_id", T: ddl.Int64{}},
 		},
 		Pks: []ddl.IndexKey{ddl.IndexKey{Col: "synth_id"}}}
-	assert.Equal(t, e, conv.spSchema["table"])
-	assert.Equal(t, syntheticPKey{col: "synth_id", sequence: 0}, conv.syntheticPKeys["table"])
+	assert.Equal(t, e, conv.SpSchema["table"])
+	assert.Equal(t, SyntheticPKey{Col: "synth_id", Sequence: 0}, conv.SyntheticPKeys["table"])
 }
 
 func parse(t *testing.T, s string) []nodes.Node {
