@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package internal
+package postgres
 
 import (
 	"bufio"
@@ -21,6 +21,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cloudspannerecosystem/harbourbridge/internal"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -44,17 +45,20 @@ func TestReport(t *testing.T) {
             a bigint[],
             b integer NOT NULL,
             c text);`
-	conv := MakeConv()
+	conv := internal.MakeConv()
 	conv.SetSchemaMode()
-	ProcessPgDump(conv, NewReader(bufio.NewReader(strings.NewReader(s)), nil))
-	conv.stats.rows = map[string]int64{"bad_schema": 1000, "no_pk": 5000}
-	conv.stats.goodRows = map[string]int64{"bad_schema": 990, "no_pk": 3000}
-	conv.stats.badRows = map[string]int64{"bad_schema": 10, "no_pk": 2000}
+	ProcessPgDump(conv, internal.NewReader(bufio.NewReader(strings.NewReader(s)), nil))
+	conv.StatsAddRows("bad_schema", 1000)
+	conv.StatsAddRows("no_pk", 5000)
+	conv.StatsAddGoodRows("bad_schema", 990)
+	conv.StatsAddGoodRows("no_pk", 3000)
+	conv.StatsAddBadRows("bad_schema", 10)
+	conv.StatsAddBadRows("no_pk", 2000)
 	badWrites := map[string]int64{"bad_schema": 50, "no_pk": 0}
-	conv.stats.unexpected["Testing unexpected messages"] = 5
+	conv.StatsAddUnexpecteds("Testing unexpected messages", 5)
 	buf := new(bytes.Buffer)
 	w := bufio.NewWriter(buf)
-	GenerateReport(true, conv, w, badWrites)
+	internal.GenerateReport(true, "pgdump", conv, w, badWrites)
 	w.Flush()
 	// Print copy of report to stdout (shows up when running go test -v).
 	fmt.Print(buf.String())

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package internal
+package postgres
 
 import (
 	"bufio"
@@ -23,10 +23,10 @@ import (
 	"time"
 
 	"cloud.google.com/go/spanner"
+	"github.com/cloudspannerecosystem/harbourbridge/internal"
+	"github.com/cloudspannerecosystem/harbourbridge/spanner/ddl"
 	pg_query "github.com/lfittl/pg_query_go"
 	"github.com/stretchr/testify/assert"
-
-	"github.com/cloudspannerecosystem/harbourbridge/spanner/ddl"
 )
 
 type spannerData struct {
@@ -547,10 +547,10 @@ func TestProcessPgDump_AddPrimaryKeys(t *testing.T) {
 
 func TestProcessPgDump_WithUnparsableContent(t *testing.T) {
 	s := "This is unparsable content"
-	conv := MakeConv()
+	conv := internal.MakeConv()
 	conv.SetLocation(time.UTC)
 	conv.SetSchemaMode()
-	err := ProcessPgDump(conv, NewReader(bufio.NewReader(strings.NewReader(s)), nil))
+	err := ProcessPgDump(conv, internal.NewReader(bufio.NewReader(strings.NewReader(s)), nil))
 	if err == nil {
 		t.Fatalf("Expect an error, but got nil")
 	}
@@ -559,18 +559,18 @@ func TestProcessPgDump_WithUnparsableContent(t *testing.T) {
 	}
 }
 
-func runProcessPgDump(s string) (*Conv, []spannerData) {
-	conv := MakeConv()
+func runProcessPgDump(s string) (*internal.Conv, []spannerData) {
+	conv := internal.MakeConv()
 	conv.SetLocation(time.UTC)
 	conv.SetSchemaMode()
-	ProcessPgDump(conv, NewReader(bufio.NewReader(strings.NewReader(s)), nil))
+	ProcessPgDump(conv, internal.NewReader(bufio.NewReader(strings.NewReader(s)), nil))
 	conv.SetDataMode()
 	var rows []spannerData
 	conv.SetDataSink(
 		func(table string, cols []string, vals []interface{}) {
 			rows = append(rows, spannerData{table: table, cols: cols, vals: vals})
 		})
-	ProcessPgDump(conv, NewReader(bufio.NewReader(strings.NewReader(s)), nil))
+	ProcessPgDump(conv, internal.NewReader(bufio.NewReader(strings.NewReader(s)), nil))
 	return conv, rows
 }
 
@@ -578,15 +578,15 @@ func runProcessPgDump(s string) (*Conv, []spannerData) {
 // contains no unexpected conditions, statement errors, etc. Note that
 // many tests are issue-free, but several explicitly test handling of
 // various issues (so don't call nonIssue for them!).
-func noIssues(conv *Conv, t *testing.T, name string) {
-	assert.Zero(t, len(conv.stats.unexpected), fmt.Sprintf("'%s' generated unexpected conditions: %v", name, conv.stats.unexpected))
-	for s, stat := range conv.stats.statement {
+func noIssues(conv *internal.Conv, t *testing.T, name string) {
+	assert.Zero(t, len(conv.GetUnexpected()), fmt.Sprintf("'%s' generated unexpected conditions: %v", name, conv.GetUnexpected()))
+	for s, stat := range conv.GetStatement() {
 		assert.Zero(t, stat.Error, fmt.Sprintf("'%s' generated %d errors for %s statements", name, stat.Error, s))
 		if stat.Error > 0 {
 		}
 	}
-	assert.Zero(t, len(conv.stats.badRows), fmt.Sprintf("'%s' generated bad rows: %v", name, conv.stats.badRows))
-	assert.Zero(t, conv.stats.reparsed, fmt.Sprintf("'%s' generated %d reparse events", name, conv.stats.reparsed))
+	assert.Zero(t, len(conv.GetBadRows()), fmt.Sprintf("'%s' generated bad rows: %v", name, conv.GetBadRows()))
+	assert.Zero(t, conv.GetReparsed(), fmt.Sprintf("'%s' generated %d reparse events", name, conv.GetReparsed()))
 }
 
 // stripSchemaComments returns a schema with all comments removed.
